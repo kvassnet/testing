@@ -1,0 +1,100 @@
+name: test
+run-name: test ${{ inputs.ref }}${{ inputs.macos && ' [macos]' || '' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'branch or commit'
+        required: true
+        default: main
+      macos:
+        description: 'macOS e2e'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: kvassnet/kvass-core
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.KVASS_CORE_DEPLOY_KEY }}
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: go test (non-root)
+        run: go test -race ./...
+      - name: go test (root)
+        env:
+          KVASS_TEST_ICMP_TARGET: "127.0.0.1"
+          KVASS_TEST_ICMP6_TARGET: skip
+        run: |
+          sudo mkdir -p /tmp/go-cache-root
+          sudo -E env "PATH=$PATH" go version
+          sudo -E env "PATH=$PATH" GOCACHE=/tmp/go-cache-root go test -race ./...
+
+  linux-e2e:
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: kvassnet/kvass-core
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.KVASS_CORE_DEPLOY_KEY }}
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build kvass
+        run: |
+          CGO_ENABLED=0 go build -o /tmp/kvass-core .
+          CGO_ENABLED=0 go build -o /tmp/gen-mmdb ./tests/e2e/gen_mmdb/
+      - name: Linux e2e
+        run: sudo bash tests/e2e/linux.sh
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: linux-e2e-diagnostics
+          path: /tmp/kvass-diag
+          retention-days: 1
+
+  macos-e2e:
+    runs-on: macos-latest
+    if: inputs.macos
+    needs: unit
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: kvassnet/kvass-core
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.KVASS_CORE_DEPLOY_KEY }}
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: go test (root)
+        env:
+          KVASS_TEST_ICMP_TARGET: skip
+          KVASS_TEST_ICMP6_TARGET: skip
+        run: |
+          sudo mkdir -p /tmp/go-cache-root
+          sudo -E env "PATH=$PATH" go version
+          sudo -E env "PATH=$PATH" GOCACHE=/tmp/go-cache-root go test -race ./...
+      - name: Build kvass
+        run: CGO_ENABLED=0 go build -o /tmp/kvass-core .
+      - name: macOS e2e
+        run: sudo bash tests/e2e/macos.sh
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: macos-e2e-diagnostics
+          path: /tmp/kvass-diag
+          retention-days: 1
