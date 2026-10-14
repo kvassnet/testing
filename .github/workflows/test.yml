@@ -95,6 +95,9 @@ jobs:
         run: CGO_ENABLED=0 go build -o /tmp/kvass-core .
       - name: macOS e2e
         run: sudo bash tests/e2e/macos.sh
+      - name: WireGuard system test (root)
+        run: |
+          sudo -E env "PATH=$PATH" go test ./outbound/wireguard -run 'TestWGSystem' -count=1 -v
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
