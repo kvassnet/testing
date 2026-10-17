@@ -38,8 +38,11 @@ jobs:
           KVASS_TEST_ICMP6_TARGET: skip
         run: |
           sudo mkdir -p /tmp/go-cache-root
-          sudo -E env "PATH=$PATH" go version
-          sudo -E env "PATH=$PATH" GOCACHE=/tmp/go-cache-root go test -race ./...
+          sudo env "PATH=$PATH" go version
+          sudo env "PATH=$PATH" GOCACHE=/tmp/go-cache-root \
+            KVASS_TEST_ICMP_TARGET="$KVASS_TEST_ICMP_TARGET" \
+            KVASS_TEST_ICMP6_TARGET="$KVASS_TEST_ICMP6_TARGET" \
+            go test -race ./...
 
   linux-e2e:
     runs-on: ubuntu-24.04
@@ -89,15 +92,18 @@ jobs:
           KVASS_TEST_ICMP6_TARGET: skip
         run: |
           sudo mkdir -p /tmp/go-cache-root
-          sudo -E env "PATH=$PATH" go version
-          sudo -E env "PATH=$PATH" GOCACHE=/tmp/go-cache-root go test -race ./...
+          sudo env "PATH=$PATH" go version
+          sudo env "PATH=$PATH" GOCACHE=/tmp/go-cache-root \
+            KVASS_TEST_ICMP_TARGET="$KVASS_TEST_ICMP_TARGET" \
+            KVASS_TEST_ICMP6_TARGET="$KVASS_TEST_ICMP6_TARGET" \
+            go test -race ./...
       - name: Build kvass
         run: CGO_ENABLED=0 go build -o /tmp/kvass-core .
       - name: macOS e2e
         run: sudo bash tests/e2e/macos.sh
       - name: WireGuard system test (root)
         run: |
-          sudo -E env "PATH=$PATH" go test ./outbound/wireguard -run 'TestWGSystem' -count=1 -v
+          sudo env "PATH=$PATH" go test ./outbound/wireguard -run 'TestWGSystem' -count=1 -v
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
