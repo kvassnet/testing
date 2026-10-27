@@ -1,0 +1,66 @@
+name: bench
+run-name: bench ${{ inputs.ref }} sing-box@${{ inputs.singbox }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'kvass-core branch or commit'
+        required: true
+        default: main
+      singbox:
+        description: 'sing-box version'
+        required: false
+        default: '1.15.0-alpha.13'
+      rounds:
+        description: 'number of rounds'
+        required: false
+        default: '3'
+      duration:
+        description: 'seconds per test'
+        required: false
+        default: '8'
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: kvassnet/kvass-core
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.KVASS_CORE_DEPLOY_KEY }}
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build kvass-core and connload
+        run: |
+          CGO_ENABLED=0 go build -o /tmp/kvass-core .
+          go build -o /tmp/connload ./tests/bench/connload
+      - name: Download sing-box
+        run: |
+          SINGBOX="${{ inputs.singbox }}"
+          curl -fsSL -o /tmp/sb.tgz \
+            "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX}/sing-box-${SINGBOX}-linux-amd64.tar.gz"
+          tar xzf /tmp/sb.tgz -C /tmp
+          mv /tmp/sing-box-${SINGBOX}-linux-amd64/sing-box /tmp/sing-box
+          /tmp/sing-box version | grep "$SINGBOX" || { echo "sing-box version mismatch"; exit 1; }
+      - name: Install iperf3 and jq
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq iperf3 jq
+      - name: Run benchmark
+        run: |
+          sudo env "PATH=$PATH" ROUNDS=${{ inputs.rounds }} DURATION=${{ inputs.duration }} \
+            bash tests/bench/linux.sh
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: bench-results
+          path: /tmp/kvass-bench
+          retention-days: 7
