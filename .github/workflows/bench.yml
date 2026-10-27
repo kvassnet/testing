@@ -1,5 +1,5 @@
 name: bench
-run-name: bench ${{ inputs.ref }} sing-box@${{ inputs.singbox }}
+run-name: bench ${{ inputs.ref }} sing-box@${{ inputs.singbox }} [${{ inputs.arch }}]
 
 on:
   workflow_dispatch:
@@ -20,13 +20,17 @@ on:
         description: 'seconds per test'
         required: false
         default: '8'
+      arch:
+        description: 'architecture (amd64 or arm64)'
+        required: false
+        default: 'amd64'
 
 permissions:
   contents: read
 
 jobs:
   bench:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -45,10 +49,11 @@ jobs:
       - name: Download sing-box
         run: |
           SINGBOX="${{ inputs.singbox }}"
+          ARCH="${{ inputs.arch }}"
           curl -fsSL -o /tmp/sb.tgz \
-            "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX}/sing-box-${SINGBOX}-linux-amd64.tar.gz"
+            "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX}/sing-box-${SINGBOX}-linux-${ARCH}.tar.gz"
           tar xzf /tmp/sb.tgz -C /tmp
-          mv /tmp/sing-box-${SINGBOX}-linux-amd64/sing-box /tmp/sing-box
+          mv /tmp/sing-box-${SINGBOX}-linux-${ARCH}/sing-box /tmp/sing-box
           /tmp/sing-box version | grep "$SINGBOX" || { echo "sing-box version mismatch"; exit 1; }
       - name: Install iperf3 and jq
         run: |
@@ -61,6 +66,6 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: bench-results
+          name: bench-results-${{ inputs.arch }}
           path: /tmp/kvass-bench
           retention-days: 7
