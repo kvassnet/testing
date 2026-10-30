@@ -46,14 +46,16 @@ jobs:
         run: |
           CGO_ENABLED=0 go build -o /tmp/kvass-core .
           go build -o /tmp/connload ./tests/bench/connload
-      - name: Download sing-box
+      - name: Build sing-box
         run: |
           SINGBOX="${{ inputs.singbox }}"
-          ARCH="${{ inputs.arch }}"
-          curl -fsSL -o /tmp/sb.tgz \
-            "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX}/sing-box-${SINGBOX}-linux-${ARCH}.tar.gz"
-          tar xzf /tmp/sb.tgz -C /tmp
-          mv /tmp/sing-box-${SINGBOX}-linux-${ARCH}/sing-box /tmp/sing-box
+          echo "singbox build: source (symbols)"
+          git clone --depth 1 -b "v${SINGBOX}" https://github.com/SagerNet/sing-box /tmp/sing-box-src
+          cd /tmp/sing-box-src
+          CGO_ENABLED=0 GOTOOLCHAIN=local go build -trimpath \
+            -tags "$(cat release/DEFAULT_BUILD_TAGS_OTHERS)" \
+            -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${SINGBOX}' $(cat release/LDFLAGS) -buildid=" \
+            -o /tmp/sing-box ./cmd/sing-box
           /tmp/sing-box version | grep "$SINGBOX" || { echo "sing-box version mismatch"; exit 1; }
       - name: Install iperf3 and jq
         run: |
