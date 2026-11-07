@@ -1,0 +1,74 @@
+name: bench
+run-name: bench ${{ inputs.ref }} sing-box@${{ inputs.singbox }} [${{ inputs.arch }}]
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'kvass-core branch or commit'
+        required: true
+        default: main
+      singbox:
+        description: 'sing-box version'
+        required: false
+        default: '1.15.0-alpha.13'
+      rounds:
+        description: 'number of rounds'
+        required: false
+        default: '3'
+      duration:
+        description: 'seconds per test'
+        required: false
+        default: '8'
+      arch:
+        description: 'architecture (amd64 or arm64)'
+        required: false
+        default: 'amd64'
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ${{ inputs.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: kvassnet/kvass-core
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.KVASS_CORE_DEPLOY_KEY }}
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build kvass-core and connload
+        run: |
+          CGO_ENABLED=0 go build -o /tmp/kvass-core .
+          go build -o /tmp/connload ./tests/bench/connload
+      - name: Build sing-box
+        run: |
+          SINGBOX="${{ inputs.singbox }}"
+          echo "singbox build: source (symbols)"
+          git clone --depth 1 -b "v${SINGBOX}" https://github.com/SagerNet/sing-box /tmp/sing-box-src
+          cd /tmp/sing-box-src
+          CGO_ENABLED=0 GOTOOLCHAIN=local go build -trimpath \
+            -tags "$(cat release/DEFAULT_BUILD_TAGS_OTHERS)" \
+            -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${SINGBOX}' $(cat release/LDFLAGS) -buildid=" \
+            -o /tmp/sing-box ./cmd/sing-box
+          /tmp/sing-box version | grep "$SINGBOX" || { echo "sing-box version mismatch"; exit 1; }
+      - name: Install iperf3 and jq
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq iperf3 jq tcpdump ethtool netperf
+          sudo apt-get install -y -qq linux-tools-common "linux-tools-$(uname -r)" || echo "perf unavailable"
+      - name: Run benchmark
+        run: |
+          sudo env "PATH=$PATH" ROUNDS=${{ inputs.rounds }} DURATION=${{ inputs.duration }} \
+            bash tests/bench/linux.sh
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: bench-results-${{ inputs.arch }}
+          path: /tmp/kvass-bench
+          retention-days: 7

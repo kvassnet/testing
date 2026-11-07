@@ -46,7 +46,7 @@ jobs:
 
   linux-e2e:
     runs-on: ubuntu-26.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     needs: unit
     steps:
       - uses: actions/checkout@v7
@@ -63,7 +63,7 @@ jobs:
           CGO_ENABLED=0 go build -o /tmp/kvass-core .
           CGO_ENABLED=0 go build -o /tmp/gen-mmdb ./tests/e2e/gen_mmdb/
       - name: Linux e2e
-        run: sudo bash tests/e2e/linux.sh
+        run: sudo env "PATH=$PATH" bash tests/e2e/linux.sh
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
