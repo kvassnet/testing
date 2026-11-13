@@ -174,7 +174,7 @@ jobs:
 
   linux-amd64-tsan:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
         with:
@@ -203,9 +203,16 @@ jobs:
         env:
           TSAN_OPTIONS: "halt_on_error=1:second_deadlock_stack=1"
         run: bash tests/e2e/smoke_posix.sh build-tsan
+      - name: Privileged Linux netns E2E (TSan)
+        if: inputs.linux_e2e
+        env:
+          TSAN_OPTIONS: "halt_on_error=1:second_deadlock_stack=1"
+        run: |
+          cp build-tsan/kvass-core build-tsan/gen-mmdb build-tsan/wsdump /tmp/
+          sudo env "PATH=$PATH" TSAN_OPTIONS="$TSAN_OPTIONS" bash tests/e2e/linux.sh
       - name: Clean temporary binaries
         if: always()
-        run: rm -rf build-tsan
+        run: rm -rf build-tsan /tmp/kvass-core /tmp/gen-mmdb /tmp/wsdump /tmp/kvass-diag
 
   linux-arm64:
     runs-on: ubuntu-24.04-arm
