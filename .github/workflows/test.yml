@@ -74,7 +74,7 @@ jobs:
       - name: Configure & build (RelWithDebInfo)
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          cmake --build build -j
+          cmake --build build -j -- -k 0
       - name: Unit & architecture tests (ctest)
         run: ctest --test-dir build --output-on-failure -j4
       - name: Loopback E2E smoke test
@@ -110,7 +110,7 @@ jobs:
       - name: Configure & build (RelWithDebInfo, GCC)
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          cmake --build build -j
+          cmake --build build -j -- -k 0
       - name: Unit & architecture tests (non-root)
         run: ctest --test-dir build --output-on-failure -j4
       - name: Root socket/TUN unit subset
@@ -157,7 +157,7 @@ jobs:
           CC=clang CXX=clang++ cmake -S . -B build-asan -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DKVASS_ENABLE_ASAN=ON
-          cmake --build build-asan -j
+          cmake --build build-asan -j -- -k 0
       - name: Unit & architecture tests (ASan + UBSan)
         env:
           ASAN_OPTIONS: "detect_leaks=1:halt_on_error=1"
@@ -193,9 +193,10 @@ jobs:
           CC=clang CXX=clang++ cmake -S . -B build-tsan -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DKVASS_ENABLE_TSAN=ON
-          cmake --build build-tsan -j
+          cmake --build build-tsan -j -- -k 0
       - name: Unit & architecture tests (TSan)
         env:
+          KVASS_TEST_IO_THREADS: "4"
           TSAN_OPTIONS: "halt_on_error=1:second_deadlock_stack=1"
         run: ctest --test-dir build-tsan --output-on-failure -j4
       - name: Loopback E2E smoke test (TSan)
@@ -224,7 +225,7 @@ jobs:
       - name: Configure & build (RelWithDebInfo)
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          cmake --build build -j
+          cmake --build build -j -- -k 0
       - name: Unit & architecture tests (non-root)
         run: ctest --test-dir build --output-on-failure -j4
       - name: Root socket/TUN unit subset
@@ -256,14 +257,18 @@ jobs:
           ref: ${{ inputs.ref }}
           ssh-key: ${{ secrets.KVASS_CORE_DEPLOY_KEY }}
           persist-credentials: false
-      - name: Configure & build (MSVC x64 RelWithDebInfo)
+      - name: Configure & build (MSVC x64 RelWithDebInfo, Ninja)
         shell: pwsh
         run: |
-          cmake -S . -B build -A x64
-          cmake --build build --config RelWithDebInfo --parallel
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          Import-Module "$vsPath\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64"
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja -y }
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build -j -- -k 0
       - name: Unit & architecture tests (ctest)
         shell: pwsh
-        run: ctest --test-dir build -C RelWithDebInfo --output-on-failure -j4
+        run: ctest --test-dir build --output-on-failure -j4
       - name: Windows Loopback E2E smoke test
         shell: pwsh
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File tests/e2e/windows.ps1 -BuildDir build
