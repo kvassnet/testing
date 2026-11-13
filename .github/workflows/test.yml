@@ -1,5 +1,5 @@
 name: test
-run-name: test ${{ inputs.ref }}${{ inputs.macos && ' [macos]' || '' }}
+run-name: test ${{ inputs.ref }} [4-arch C++20]
 
 on:
   workflow_dispatch:
@@ -7,9 +7,17 @@ on:
       ref:
         description: 'branch or commit'
         required: true
-        default: main
-      macos:
-        description: 'macOS e2e'
+        default: cpp
+      asan:
+        description: 'run Linux ASan + UBSan suite'
+        type: boolean
+        default: true
+      linux_e2e:
+        description: 'run privileged Linux netns TUN e2e'
+        type: boolean
+        default: false
+      macos_e2e:
+        description: 'run privileged macOS utun e2e'
         type: boolean
         default: false
 
@@ -17,9 +25,9 @@ permissions:
   contents: read
 
 jobs:
-  unit:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+  darwin-arm64:
+    runs-on: macos-15
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
         with:
@@ -27,56 +35,89 @@ jobs:
           ref: ${{ inputs.ref }}
           ssh-key: ${{ secrets.KVASS_CORE_DEPLOY_KEY }}
           persist-credentials: false
-      - uses: actions/setup-go@v7
+      - name: Verify arm64 host & Ninja
+        run: |
+          test "$(uname -m)" = "arm64"
+          command -v ninja >/dev/null 2>&1 || brew install ninja
+      - name: Configure & build (RelWithDebInfo)
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build -j
+      - name: Unit & architecture tests (ctest)
+        run: ctest --test-dir build --output-on-failure -j4
+      - name: Loopback E2E smoke test
+        run: bash tests/e2e/smoke_posix.sh build
+      - name: Verify release packaging script (no upload)
+        run: |
+          KVASS_TARGETS="darwin/arm64" sh scripts/build.sh ci-verify
+          rm -rf dist build-release-darwin-arm64
+      - name: Privileged macOS utun E2E
+        if: inputs.macos_e2e
+        run: |
+          cp build/kvass-core build/gen-mmdb build/wsdump /tmp/
+          sudo bash tests/e2e/macos.sh
+      - name: Clean temporary binaries
+        if: always()
+        run: rm -rf build dist build-release-* /tmp/kvass-core /tmp/gen-mmdb /tmp/wsdump /tmp/kvass-diag
+
+  linux-amd64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
         with:
-          go-version-file: go.mod
-      - name: go test (non-root)
-        run: go test -race ./...
-      - name: go test (root)
+          repository: kvassnet/kvass-core
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.KVASS_CORE_DEPLOY_KEY }}
+          persist-credentials: false
+      - name: Install build tools
+        run: |
+          test "$(uname -m)" = "x86_64"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build clang
+      - name: Configure & build (RelWithDebInfo, GCC)
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build -j
+      - name: Unit & architecture tests (non-root)
+        run: ctest --test-dir build --output-on-failure -j4
+      - name: Root socket/TUN unit subset
         env:
           KVASS_TEST_ICMP_TARGET: "127.0.0.1"
           KVASS_TEST_ICMP6_TARGET: skip
         run: |
-          sudo mkdir -p /tmp/go-cache-root
-          sudo env "PATH=$PATH" go version
-          sudo env "PATH=$PATH" GOCACHE=/tmp/go-cache-root \
+          sudo env "PATH=$PATH" \
             KVASS_TEST_ICMP_TARGET="$KVASS_TEST_ICMP_TARGET" \
             KVASS_TEST_ICMP6_TARGET="$KVASS_TEST_ICMP6_TARGET" \
-            go test -race ./...
-
-  linux-e2e:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    needs: unit
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          repository: kvassnet/kvass-core
-          ref: ${{ inputs.ref }}
-          ssh-key: ${{ secrets.KVASS_CORE_DEPLOY_KEY }}
-          persist-credentials: false
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-      - name: Build kvass
+            ctest --test-dir build --output-on-failure -R "kvass_milestone1_test|kvass_stack_tun_test|kvass_outbound_test"
+      - name: Loopback E2E smoke test
+        run: bash tests/e2e/smoke_posix.sh build
+      - name: ASan + UBSan full verification (Clang Debug)
+        if: inputs.asan
         run: |
-          CGO_ENABLED=0 go build -o /tmp/kvass-core .
-          CGO_ENABLED=0 go build -o /tmp/gen-mmdb ./tests/e2e/gen_mmdb/
-          if [ -d tests/e2e/wsdump ]; then CGO_ENABLED=0 go build -o /tmp/wsdump ./tests/e2e/wsdump/; fi
-      - name: Linux e2e
-        run: sudo env "PATH=$PATH" bash tests/e2e/linux.sh
-      - uses: actions/upload-artifact@v7
-        if: failure()
-        with:
-          name: linux-e2e-diagnostics
-          path: /tmp/kvass-diag
-          retention-days: 1
+          CC=clang CXX=clang++ cmake -S . -B build-asan -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DKVASS_ENABLE_ASAN=ON
+          cmake --build build-asan -j
+          ctest --test-dir build-asan --output-on-failure -j4
+          bash tests/e2e/smoke_posix.sh build-asan
+          rm -rf build-asan
+      - name: Verify release packaging script (no upload)
+        run: |
+          KVASS_TARGETS="linux/amd64" sh scripts/build.sh ci-verify
+          rm -rf dist build-release-linux-amd64
+      - name: Privileged Linux netns E2E
+        if: inputs.linux_e2e
+        run: |
+          cp build/kvass-core build/gen-mmdb build/wsdump /tmp/
+          sudo env "PATH=$PATH" bash tests/e2e/linux.sh
+      - name: Clean temporary binaries
+        if: always()
+        run: rm -rf build build-asan dist build-release-* /tmp/kvass-core /tmp/gen-mmdb /tmp/wsdump /tmp/kvass-diag
 
-  macos-e2e:
-    runs-on: macos-latest
-    timeout-minutes: 45
-    if: inputs.macos
-    needs: unit
+  linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
         with:
@@ -84,30 +125,59 @@ jobs:
           ref: ${{ inputs.ref }}
           ssh-key: ${{ secrets.KVASS_CORE_DEPLOY_KEY }}
           persist-credentials: false
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-      - name: go test (root)
+      - name: Install build tools
+        run: |
+          test "$(uname -m)" = "aarch64"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build
+      - name: Configure & build (RelWithDebInfo)
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build -j
+      - name: Unit & architecture tests (non-root)
+        run: ctest --test-dir build --output-on-failure -j4
+      - name: Root socket/TUN unit subset
         env:
-          KVASS_TEST_ICMP_TARGET: skip
+          KVASS_TEST_ICMP_TARGET: "127.0.0.1"
           KVASS_TEST_ICMP6_TARGET: skip
         run: |
-          sudo mkdir -p /tmp/go-cache-root
-          sudo env "PATH=$PATH" go version
-          sudo env "PATH=$PATH" GOCACHE=/tmp/go-cache-root \
+          sudo env "PATH=$PATH" \
             KVASS_TEST_ICMP_TARGET="$KVASS_TEST_ICMP_TARGET" \
             KVASS_TEST_ICMP6_TARGET="$KVASS_TEST_ICMP6_TARGET" \
-            go test -race ./...
-      - name: Build kvass
-        run: CGO_ENABLED=0 go build -o /tmp/kvass-core .
-      - name: macOS e2e
-        run: sudo bash tests/e2e/macos.sh
-      - name: WireGuard system test (root)
+            ctest --test-dir build --output-on-failure -R "kvass_milestone1_test|kvass_stack_tun_test|kvass_outbound_test"
+      - name: Loopback E2E smoke test
+        run: bash tests/e2e/smoke_posix.sh build
+      - name: Verify release packaging script (no upload)
         run: |
-          sudo env "PATH=$PATH" go test ./outbound/wireguard -run 'TestWGSystem' -count=1 -v
-      - uses: actions/upload-artifact@v7
-        if: failure()
+          KVASS_TARGETS="linux/arm64" sh scripts/build.sh ci-verify
+          rm -rf dist build-release-linux-arm64
+      - name: Clean temporary binaries
+        if: always()
+        run: rm -rf build dist build-release-*
+
+  windows-amd64:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
         with:
-          name: macos-e2e-diagnostics
-          path: /tmp/kvass-diag
-          retention-days: 1
+          repository: kvassnet/kvass-core
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.KVASS_CORE_DEPLOY_KEY }}
+          persist-credentials: false
+      - name: Configure & build (MSVC x64 RelWithDebInfo)
+        shell: pwsh
+        run: |
+          cmake -S . -B build -A x64
+          cmake --build build --config RelWithDebInfo --parallel
+      - name: Unit & architecture tests (ctest)
+        shell: pwsh
+        run: ctest --test-dir build -C RelWithDebInfo --output-on-failure -j4
+      - name: Windows Loopback E2E smoke test
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File tests/e2e/windows.ps1 -BuildDir build
+      - name: Clean temporary binaries
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path build) { Remove-Item -Recurse -Force build -ErrorAction SilentlyContinue }

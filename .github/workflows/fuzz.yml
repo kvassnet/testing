@@ -7,11 +7,11 @@ on:
       ref:
         description: 'branch or full commit SHA'
         required: true
-        default: main
+        default: cpp
       fuzztime:
-        description: 'time per Fuzz target (go -fuzztime)'
+        description: 'seconds per libFuzzer target (e.g. 30, 60s, 2m)'
         required: true
-        default: 2m
+        default: '30'
 
 permissions:
   contents: read
@@ -27,43 +27,58 @@ jobs:
           ref: ${{ inputs.ref }}
           ssh-key: ${{ secrets.KVASS_CORE_DEPLOY_KEY }}
           persist-credentials: false
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-      - name: go test -fuzz (every Fuzz target, one at a time)
-        env:
-          FUZZTIME: ${{ inputs.fuzztime }}
+      - name: Install Clang & Ninja
         run: |
-          # go test -fuzz accepts one target per package per run, so list
-          # every "func FuzzXxx(" and run them serially (each run already
-          # uses all CPUs). Keep going after a crash so one bad target does
-          # not hide the others; fail the job at the end.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build clang
+      - name: Build libFuzzer + ASan/UBSan targets
+        run: |
+          CC=clang CXX=clang++ cmake -S . -B build-fuzz -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DKVASS_ENABLE_ASAN=ON \
+            -DKVASS_ENABLE_FUZZERS=ON
+          cmake --build build-fuzz --target \
+            fuzz_sniff_tcp \
+            fuzz_sniff_quic_udp \
+            fuzz_dns_codec \
+            fuzz_stack_headers \
+            fuzz_protocol_codec \
+            fuzz_config_and_rules \
+            -j
+      - name: Run all 6 libFuzzer harnesses (zero artifact uploads)
+        env:
+          RAW_FUZZTIME: ${{ inputs.fuzztime }}
+        run: |
+          case "$RAW_FUZZTIME" in
+            *m) SECS=$(( ${RAW_FUZZTIME%m} * 60 )) ;;
+            *s) SECS=${RAW_FUZZTIME%s} ;;
+            *)  SECS=$RAW_FUZZTIME ;;
+          esac
+          mkdir -p /tmp/fuzz-scratch
           failed=()
-          while IFS=: read -r file name; do
-            pkg="./$(dirname "$file")"
-            echo "::group::$pkg $name"
-            if ! go test -run '^$' -fuzz "^${name}\$" -fuzztime "$FUZZTIME" "$pkg"; then
-              failed+=("$pkg $name")
+          for target in \
+            fuzz_sniff_tcp \
+            fuzz_sniff_quic_udp \
+            fuzz_dns_codec \
+            fuzz_stack_headers \
+            fuzz_protocol_codec \
+            fuzz_config_and_rules; do
+            echo "::group::$target (${SECS}s)"
+            corpus_dir="/tmp/fuzz-scratch/corpus-${target}"
+            mkdir -p "$corpus_dir"
+            if ! "./build-fuzz/${target}" "$corpus_dir" \
+              -max_total_time="$SECS" \
+              -artifact_prefix="/tmp/fuzz-scratch/${target}-" \
+              -print_final_stats=1; then
+              failed+=("$target")
             fi
             echo "::endgroup::"
-          done < <(grep -rHo --include='*_test.go' '^func Fuzz[A-Za-z0-9_]*' . \
-                     | sed 's|^\./||; s/func //' | sort -u)
+          done
+          rm -rf /tmp/fuzz-scratch
           if ((${#failed[@]})); then
             printf 'FAILED: %s\n' "${failed[@]}"
             exit 1
           fi
-      - name: Collect new crashers
-        if: failure()
-        run: |
-          # New crash inputs are written to <pkg>/testdata/fuzz/FuzzXxx/ and
-          # are untracked; committed seeds are left out.
-          mkdir -p /tmp/fuzz-crashers
-          git ls-files --others --exclude-standard -- '*testdata/fuzz/*' \
-            | xargs -r cp --parents -t /tmp/fuzz-crashers
-          find /tmp/fuzz-crashers -type f
-      - uses: actions/upload-artifact@v7
-        if: failure()
-        with:
-          name: fuzz-crashers
-          path: /tmp/fuzz-crashers
-          retention-days: 7
+      - name: Clean temporary binaries
+        if: always()
+        run: rm -rf build-fuzz /tmp/fuzz-scratch
