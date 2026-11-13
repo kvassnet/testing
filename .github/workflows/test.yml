@@ -124,16 +124,6 @@ jobs:
             ctest --test-dir build --output-on-failure -R "kvass_milestone1_test|kvass_stack_tun_test|kvass_outbound_test"
       - name: Loopback E2E smoke test
         run: bash tests/e2e/smoke_posix.sh build
-      - name: ASan + UBSan full verification (Clang Debug)
-        if: inputs.asan
-        run: |
-          CC=clang CXX=clang++ cmake -S . -B build-asan -G Ninja \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DKVASS_ENABLE_ASAN=ON
-          cmake --build build-asan -j
-          ctest --test-dir build-asan --output-on-failure -j4
-          bash tests/e2e/smoke_posix.sh build-asan
-          rm -rf build-asan
       - name: Verify release packaging script (no upload)
         run: |
           KVASS_TARGETS="linux/amd64" sh scripts/build.sh ci-verify
@@ -145,7 +135,76 @@ jobs:
           sudo env "PATH=$PATH" bash tests/e2e/linux.sh
       - name: Clean temporary binaries
         if: always()
-        run: rm -rf build build-asan dist build-release-* /tmp/kvass-core /tmp/gen-mmdb /tmp/wsdump /tmp/kvass-diag
+        run: rm -rf build dist build-release-* /tmp/kvass-core /tmp/gen-mmdb /tmp/wsdump /tmp/kvass-diag
+
+  linux-amd64-asan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: kvassnet/kvass-core
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.KVASS_CORE_DEPLOY_KEY }}
+          persist-credentials: false
+      - name: Install build tools
+        run: |
+          test "$(uname -m)" = "x86_64"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build clang
+      - name: Configure & build (Clang Debug ASan + UBSan)
+        run: |
+          CC=clang CXX=clang++ cmake -S . -B build-asan -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DKVASS_ENABLE_ASAN=ON
+          cmake --build build-asan -j
+      - name: Unit & architecture tests (ASan + UBSan)
+        env:
+          ASAN_OPTIONS: "detect_leaks=1:halt_on_error=1"
+          UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
+        run: ctest --test-dir build-asan --output-on-failure -j4
+      - name: Loopback E2E smoke test (ASan + UBSan)
+        env:
+          ASAN_OPTIONS: "detect_leaks=1:halt_on_error=1"
+          UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
+        run: bash tests/e2e/smoke_posix.sh build-asan
+      - name: Clean temporary binaries
+        if: always()
+        run: rm -rf build-asan
+
+  linux-amd64-tsan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: kvassnet/kvass-core
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.KVASS_CORE_DEPLOY_KEY }}
+          persist-credentials: false
+      - name: Install build tools & configure ASLR for TSan
+        run: |
+          test "$(uname -m)" = "x86_64"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build clang
+          sudo sysctl -w vm.mmap_rnd_bits=28 || true
+      - name: Configure & build (Clang RelWithDebInfo TSan)
+        run: |
+          CC=clang CXX=clang++ cmake -S . -B build-tsan -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DKVASS_ENABLE_TSAN=ON
+          cmake --build build-tsan -j
+      - name: Unit & architecture tests (TSan)
+        env:
+          TSAN_OPTIONS: "halt_on_error=1:second_deadlock_stack=1"
+        run: ctest --test-dir build-tsan --output-on-failure -j4
+      - name: Loopback E2E smoke test (TSan)
+        env:
+          TSAN_OPTIONS: "halt_on_error=1:second_deadlock_stack=1"
+        run: bash tests/e2e/smoke_posix.sh build-tsan
+      - name: Clean temporary binaries
+        if: always()
+        run: rm -rf build-tsan
 
   linux-arm64:
     runs-on: ubuntu-24.04-arm
