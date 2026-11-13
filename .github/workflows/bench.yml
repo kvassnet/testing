@@ -39,7 +39,7 @@ jobs:
           ref: ${{ inputs.ref }}
           ssh-key: ${{ secrets.KVASS_CORE_DEPLOY_KEY }}
           persist-credentials: false
-      - name: Build kvass-core and connload (C++20 Release)
+      - name: Build kvass-core and connload
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ninja-build

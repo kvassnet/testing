@@ -1,5 +1,5 @@
 name: test
-run-name: test ${{ inputs.ref }} [4-arch C++20]
+run-name: test ${{ inputs.ref }}
 
 on:
   workflow_dispatch:
