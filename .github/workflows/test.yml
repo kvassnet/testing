@@ -135,7 +135,9 @@ jobs:
           sudo env "PATH=$PATH" bash tests/e2e/linux.sh
       - name: Clean temporary binaries
         if: always()
-        run: rm -rf build dist build-release-* /tmp/kvass-core /tmp/gen-mmdb /tmp/wsdump /tmp/kvass-diag
+        run: |
+          rm -rf build dist build-release-* /tmp/kvass-core /tmp/gen-mmdb /tmp/wsdump
+          sudo rm -rf /tmp/kvass-diag
 
   linux-amd64-asan:
     runs-on: ubuntu-24.04
@@ -212,7 +214,9 @@ jobs:
           sudo env "PATH=$PATH" TSAN_OPTIONS="$TSAN_OPTIONS" bash tests/e2e/linux.sh
       - name: Clean temporary binaries
         if: always()
-        run: rm -rf build-tsan /tmp/kvass-core /tmp/gen-mmdb /tmp/wsdump /tmp/kvass-diag
+        run: |
+          rm -rf build-tsan /tmp/kvass-core /tmp/gen-mmdb /tmp/wsdump
+          sudo rm -rf /tmp/kvass-diag
 
   linux-arm64:
     runs-on: ubuntu-24.04-arm
