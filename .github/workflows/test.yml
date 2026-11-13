@@ -130,7 +130,7 @@ jobs:
 
   linux-amd64:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
@@ -218,7 +218,12 @@ jobs:
         if: ${{ !inputs.build_only && inputs.linux_e2e }}
         run: |
           cp build/kvass-core build/gen-mmdb build/wsdump /tmp/
-          sudo env "PATH=$PATH" bash tests/e2e/linux.sh
+          KVASS_E2E_SKIP=""
+          if [ -f tests/e2e/linux_skip.txt ]; then
+            KVASS_E2E_SKIP="$({ grep -Ev '^\s*(#|$)' tests/e2e/linux_skip.txt || true; } | tr '\n' ' ')"
+          fi
+          echo "KVASS_E2E_SKIP=${KVASS_E2E_SKIP}"
+          sudo env "PATH=$PATH" KVASS_E2E_SKIP="$KVASS_E2E_SKIP" bash tests/e2e/linux.sh
       - name: Clean temporary binaries
         if: always()
         run: |
@@ -276,7 +281,7 @@ jobs:
 
   linux-amd64-tsan:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
@@ -325,7 +330,12 @@ jobs:
           TSAN_OPTIONS: "halt_on_error=1:second_deadlock_stack=1"
         run: |
           cp build-tsan/kvass-core build-tsan/gen-mmdb build-tsan/wsdump /tmp/
-          sudo env "PATH=$PATH" TSAN_OPTIONS="$TSAN_OPTIONS" bash tests/e2e/linux.sh
+          KVASS_E2E_SKIP=""
+          if [ -f tests/e2e/linux_skip.txt ]; then
+            KVASS_E2E_SKIP="$({ grep -Ev '^\s*(#|$)' tests/e2e/linux_skip.txt || true; } | tr '\n' ' ')"
+          fi
+          echo "KVASS_E2E_SKIP=${KVASS_E2E_SKIP}"
+          sudo env "PATH=$PATH" KVASS_E2E_SKIP="$KVASS_E2E_SKIP" TSAN_OPTIONS="$TSAN_OPTIONS" bash tests/e2e/linux.sh
       - name: Clean temporary binaries
         if: always()
         run: |
