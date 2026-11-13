@@ -1,5 +1,5 @@
 name: fuzz
-run-name: fuzz ${{ inputs.ref }} (${{ inputs.fuzztime }} each)
+run-name: fuzz ${{ inputs.ref }} (${{ inputs.fuzztime }} each, targets=${{ inputs.targets }})
 
 on:
   workflow_dispatch:
@@ -12,6 +12,11 @@ on:
         description: 'seconds per libFuzzer target (e.g. 30, 60s, 2m)'
         required: true
         default: '30'
+      targets:
+        description: 'regex filter for libFuzzer targets'
+        type: string
+        required: false
+        default: '.*'
 
 permissions:
   contents: read
@@ -32,20 +37,30 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ninja-build clang
       - name: Build libFuzzer + ASan/UBSan targets
+        env:
+          TARGETS_REGEX: ${{ inputs.targets }}
         run: |
-          CC=clang CXX=clang++ cmake -S . -B build-fuzz -G Ninja \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DKVASS_ENABLE_ASAN=ON \
-            -DKVASS_ENABLE_FUZZERS=ON
-          cmake --build build-fuzz --target \
-            fuzz_sniff_tcp \
-            fuzz_sniff_quic_udp \
-            fuzz_dns_codec \
-            fuzz_stack_headers \
-            fuzz_protocol_codec \
-            fuzz_config_and_rules \
-            -j
-      - name: Run all 6 libFuzzer harnesses (zero artifact uploads)
+          CC=clang CXX=clang++ cmake --preset ci-fuzz
+          mapfile -t all_targets < <(
+            ninja -C build-fuzz -t targets all \
+              | awk -F: '/^fuzz_[a-zA-Z0-9_]+:/ {print $1}' \
+              | sort -u
+          )
+          regex="${TARGETS_REGEX:-.*}"
+          selected=()
+          for t in "${all_targets[@]}"; do
+            if printf '%s\n' "$t" | grep -Eq -- "$regex"; then
+              selected+=("$t")
+            fi
+          done
+          if ((${#selected[@]} == 0)); then
+            echo "ERROR: no fuzz_* targets matched regex '$regex' (available: ${all_targets[*]})" >&2
+            exit 1
+          fi
+          printf '%s\n' "${selected[@]}" > build-fuzz/selected_targets.txt
+          echo "Selected fuzz targets (${#selected[@]}): ${selected[*]}"
+          cmake --build build-fuzz --target "${selected[@]}" -j
+      - name: Run selected libFuzzer harnesses (zero artifact uploads)
         env:
           RAW_FUZZTIME: ${{ inputs.fuzztime }}
         run: |
@@ -54,15 +69,10 @@ jobs:
             *s) SECS=${RAW_FUZZTIME%s} ;;
             *)  SECS=$RAW_FUZZTIME ;;
           esac
+          mapfile -t selected < build-fuzz/selected_targets.txt
           mkdir -p /tmp/fuzz-scratch
           failed=()
-          for target in \
-            fuzz_sniff_tcp \
-            fuzz_sniff_quic_udp \
-            fuzz_dns_codec \
-            fuzz_stack_headers \
-            fuzz_protocol_codec \
-            fuzz_config_and_rules; do
+          for target in "${selected[@]}"; do
             echo "::group::$target (${SECS}s)"
             corpus_dir="/tmp/fuzz-scratch/corpus-${target}"
             mkdir -p "$corpus_dir"

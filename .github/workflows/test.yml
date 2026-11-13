@@ -20,6 +20,26 @@ on:
         description: 'run privileged macOS utun e2e'
         type: boolean
         default: false
+      filter:
+        description: 'ctest -R regex filter'
+        type: string
+        required: false
+        default: ''
+      repeat:
+        description: 'ctest --repeat until-fail:N count'
+        type: string
+        required: false
+        default: '1'
+      build_only:
+        description: 'only build targets across platforms, skip tests and e2e'
+        type: boolean
+        required: false
+        default: false
+      labels:
+        description: 'ctest -L label regex for non-root tests'
+        type: string
+        required: false
+        default: 'unit|integration'
 
 permissions:
   contents: read
@@ -48,9 +68,7 @@ jobs:
             | xargs -0 clang-format --dry-run --Werror
       - name: Run clang-tidy
         run: |
-          CC=clang CXX=clang++ cmake -S . -B build-lint -G Ninja \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          CC=clang CXX=clang++ cmake --preset ci-release -B build-lint -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           find src apps tests -type f -name '*.cpp' -not -name 'libfuzzer_driver.cpp' -print0 \
             | xargs -0 -n 4 -P "$(nproc)" clang-tidy --quiet -p build-lint
       - name: Clean lint build directory
@@ -73,18 +91,36 @@ jobs:
           command -v ninja >/dev/null 2>&1 || brew install ninja
       - name: Configure & build (RelWithDebInfo)
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --preset ci-release
           cmake --build build -j -- -k 0
       - name: Unit & architecture tests (ctest)
-        run: ctest --test-dir build --output-on-failure -j4
+        if: ${{ !inputs.build_only }}
+        env:
+          CTEST_FILTER: ${{ inputs.filter }}
+          CTEST_REPEAT: ${{ inputs.repeat }}
+          CTEST_LABELS: ${{ inputs.labels }}
+        run: |
+          args=(--test-dir build --output-on-failure -j4)
+          if [ -n "$CTEST_LABELS" ]; then
+            args+=(-L "$CTEST_LABELS")
+          fi
+          if [ -n "$CTEST_FILTER" ]; then
+            args+=(-R "$CTEST_FILTER")
+          fi
+          if [ -n "$CTEST_REPEAT" ] && [ "$CTEST_REPEAT" != "1" ]; then
+            args+=(--repeat "until-fail:$CTEST_REPEAT")
+          fi
+          ctest "${args[@]}"
       - name: Loopback E2E smoke test
+        if: ${{ !inputs.build_only }}
         run: bash tests/e2e/smoke_posix.sh build
       - name: Verify release packaging script (no upload)
+        if: ${{ !inputs.build_only }}
         run: |
           KVASS_TARGETS="darwin/arm64" sh scripts/build.sh ci-verify
           rm -rf dist build-release-darwin-arm64
       - name: Privileged macOS utun E2E
-        if: inputs.macos_e2e
+        if: ${{ !inputs.build_only && inputs.macos_e2e }}
         run: |
           cp build/kvass-core build/gen-mmdb build/wsdump /tmp/
           sudo bash tests/e2e/macos.sh
@@ -109,27 +145,77 @@ jobs:
           sudo apt-get install -y -qq ninja-build clang
       - name: Configure & build (RelWithDebInfo, GCC)
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --preset ci-release
           cmake --build build -j -- -k 0
       - name: Unit & architecture tests (non-root)
-        run: ctest --test-dir build --output-on-failure -j4
+        if: ${{ !inputs.build_only }}
+        env:
+          CTEST_FILTER: ${{ inputs.filter }}
+          CTEST_REPEAT: ${{ inputs.repeat }}
+          CTEST_LABELS: ${{ inputs.labels }}
+        run: |
+          args=(--test-dir build --output-on-failure -j4)
+          if [ -n "$CTEST_LABELS" ]; then
+            args+=(-L "$CTEST_LABELS")
+          fi
+          if [ -n "$CTEST_FILTER" ]; then
+            args+=(-R "$CTEST_FILTER")
+          fi
+          if [ -n "$CTEST_REPEAT" ] && [ "$CTEST_REPEAT" != "1" ]; then
+            args+=(--repeat "until-fail:$CTEST_REPEAT")
+          fi
+          ctest "${args[@]}"
       - name: Root socket/TUN unit subset
+        if: ${{ !inputs.build_only }}
         env:
           KVASS_TEST_ICMP_TARGET: "127.0.0.1"
           KVASS_TEST_ICMP6_TARGET: skip
+          CTEST_FILTER: ${{ inputs.filter }}
+          CTEST_REPEAT: ${{ inputs.repeat }}
         run: |
-          sudo env "PATH=$PATH" \
-            KVASS_TEST_ICMP_TARGET="$KVASS_TEST_ICMP_TARGET" \
-            KVASS_TEST_ICMP6_TARGET="$KVASS_TEST_ICMP6_TARGET" \
-            ctest --test-dir build --output-on-failure -R "kvass_milestone1_test|kvass_stack_tun_test|kvass_outbound_test"
+          repeat_args=()
+          if [ -n "$CTEST_REPEAT" ] && [ "$CTEST_REPEAT" != "1" ]; then
+            repeat_args+=(--repeat "until-fail:$CTEST_REPEAT")
+          fi
+          if [ -z "$CTEST_FILTER" ]; then
+            sudo env "PATH=$PATH" \
+              KVASS_TEST_ICMP_TARGET="$KVASS_TEST_ICMP_TARGET" \
+              KVASS_TEST_ICMP6_TARGET="$KVASS_TEST_ICMP6_TARGET" \
+              ctest --test-dir build --output-on-failure \
+                -R "kvass_milestone1_test|kvass_stack_tun_test|kvass_outbound_test" \
+                "${repeat_args[@]}"
+            sudo env "PATH=$PATH" \
+              KVASS_TEST_ICMP_TARGET="$KVASS_TEST_ICMP_TARGET" \
+              KVASS_TEST_ICMP6_TARGET="$KVASS_TEST_ICMP6_TARGET" \
+              ctest --test-dir build --output-on-failure \
+                -L root --no-tests=ignore \
+                "${repeat_args[@]}"
+          else
+            for t in kvass_milestone1_test kvass_stack_tun_test kvass_outbound_test; do
+              if [[ "$t" =~ $CTEST_FILTER ]]; then
+                sudo env "PATH=$PATH" \
+                  KVASS_TEST_ICMP_TARGET="$KVASS_TEST_ICMP_TARGET" \
+                  KVASS_TEST_ICMP6_TARGET="$KVASS_TEST_ICMP6_TARGET" \
+                  ctest --test-dir build --output-on-failure -R "^${t}$" "${repeat_args[@]}"
+              fi
+            done
+            sudo env "PATH=$PATH" \
+              KVASS_TEST_ICMP_TARGET="$KVASS_TEST_ICMP_TARGET" \
+              KVASS_TEST_ICMP6_TARGET="$KVASS_TEST_ICMP6_TARGET" \
+              ctest --test-dir build --output-on-failure \
+                -L root -R "$CTEST_FILTER" --no-tests=ignore \
+                "${repeat_args[@]}"
+          fi
       - name: Loopback E2E smoke test
+        if: ${{ !inputs.build_only }}
         run: bash tests/e2e/smoke_posix.sh build
       - name: Verify release packaging script (no upload)
+        if: ${{ !inputs.build_only }}
         run: |
           KVASS_TARGETS="linux/amd64" sh scripts/build.sh ci-verify
           rm -rf dist build-release-linux-amd64
       - name: Privileged Linux netns E2E
-        if: inputs.linux_e2e
+        if: ${{ !inputs.build_only && inputs.linux_e2e }}
         run: |
           cp build/kvass-core build/gen-mmdb build/wsdump /tmp/
           sudo env "PATH=$PATH" bash tests/e2e/linux.sh
@@ -156,16 +242,30 @@ jobs:
           sudo apt-get install -y -qq ninja-build clang
       - name: Configure & build (Clang Debug ASan + UBSan)
         run: |
-          CC=clang CXX=clang++ cmake -S . -B build-asan -G Ninja \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DKVASS_ENABLE_ASAN=ON
+          CC=clang CXX=clang++ cmake --preset ci-asan
           cmake --build build-asan -j -- -k 0
       - name: Unit & architecture tests (ASan + UBSan)
+        if: ${{ !inputs.build_only }}
         env:
           ASAN_OPTIONS: "detect_leaks=1:halt_on_error=1"
           UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
-        run: ctest --test-dir build-asan --output-on-failure -j4
+          CTEST_FILTER: ${{ inputs.filter }}
+          CTEST_REPEAT: ${{ inputs.repeat }}
+          CTEST_LABELS: ${{ inputs.labels }}
+        run: |
+          args=(--test-dir build-asan --output-on-failure -j4)
+          if [ -n "$CTEST_LABELS" ]; then
+            args+=(-L "$CTEST_LABELS")
+          fi
+          if [ -n "$CTEST_FILTER" ]; then
+            args+=(-R "$CTEST_FILTER")
+          fi
+          if [ -n "$CTEST_REPEAT" ] && [ "$CTEST_REPEAT" != "1" ]; then
+            args+=(--repeat "until-fail:$CTEST_REPEAT")
+          fi
+          ctest "${args[@]}"
       - name: Loopback E2E smoke test (ASan + UBSan)
+        if: ${{ !inputs.build_only }}
         env:
           ASAN_OPTIONS: "detect_leaks=1:halt_on_error=1"
           UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
@@ -192,21 +292,35 @@ jobs:
           sudo sysctl -w vm.mmap_rnd_bits=28 || true
       - name: Configure & build (Clang RelWithDebInfo TSan)
         run: |
-          CC=clang CXX=clang++ cmake -S . -B build-tsan -G Ninja \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DKVASS_ENABLE_TSAN=ON
+          CC=clang CXX=clang++ cmake --preset ci-tsan
           cmake --build build-tsan -j -- -k 0
       - name: Unit & architecture tests (TSan)
+        if: ${{ !inputs.build_only }}
         env:
           KVASS_TEST_IO_THREADS: "4"
           TSAN_OPTIONS: "halt_on_error=1:second_deadlock_stack=1"
-        run: ctest --test-dir build-tsan --output-on-failure -j4
+          CTEST_FILTER: ${{ inputs.filter }}
+          CTEST_REPEAT: ${{ inputs.repeat }}
+          CTEST_LABELS: ${{ inputs.labels }}
+        run: |
+          args=(--test-dir build-tsan --output-on-failure -j4)
+          if [ -n "$CTEST_LABELS" ]; then
+            args+=(-L "$CTEST_LABELS")
+          fi
+          if [ -n "$CTEST_FILTER" ]; then
+            args+=(-R "$CTEST_FILTER")
+          fi
+          if [ -n "$CTEST_REPEAT" ] && [ "$CTEST_REPEAT" != "1" ]; then
+            args+=(--repeat "until-fail:$CTEST_REPEAT")
+          fi
+          ctest "${args[@]}"
       - name: Loopback E2E smoke test (TSan)
+        if: ${{ !inputs.build_only }}
         env:
           TSAN_OPTIONS: "halt_on_error=1:second_deadlock_stack=1"
         run: bash tests/e2e/smoke_posix.sh build-tsan
       - name: Privileged Linux netns E2E (TSan)
-        if: inputs.linux_e2e
+        if: ${{ !inputs.build_only && inputs.linux_e2e }}
         env:
           TSAN_OPTIONS: "halt_on_error=1:second_deadlock_stack=1"
         run: |
@@ -235,22 +349,72 @@ jobs:
           sudo apt-get install -y -qq ninja-build
       - name: Configure & build (RelWithDebInfo)
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --preset ci-release
           cmake --build build -j -- -k 0
       - name: Unit & architecture tests (non-root)
-        run: ctest --test-dir build --output-on-failure -j4
+        if: ${{ !inputs.build_only }}
+        env:
+          CTEST_FILTER: ${{ inputs.filter }}
+          CTEST_REPEAT: ${{ inputs.repeat }}
+          CTEST_LABELS: ${{ inputs.labels }}
+        run: |
+          args=(--test-dir build --output-on-failure -j4)
+          if [ -n "$CTEST_LABELS" ]; then
+            args+=(-L "$CTEST_LABELS")
+          fi
+          if [ -n "$CTEST_FILTER" ]; then
+            args+=(-R "$CTEST_FILTER")
+          fi
+          if [ -n "$CTEST_REPEAT" ] && [ "$CTEST_REPEAT" != "1" ]; then
+            args+=(--repeat "until-fail:$CTEST_REPEAT")
+          fi
+          ctest "${args[@]}"
       - name: Root socket/TUN unit subset
+        if: ${{ !inputs.build_only }}
         env:
           KVASS_TEST_ICMP_TARGET: "127.0.0.1"
           KVASS_TEST_ICMP6_TARGET: skip
+          CTEST_FILTER: ${{ inputs.filter }}
+          CTEST_REPEAT: ${{ inputs.repeat }}
         run: |
-          sudo env "PATH=$PATH" \
-            KVASS_TEST_ICMP_TARGET="$KVASS_TEST_ICMP_TARGET" \
-            KVASS_TEST_ICMP6_TARGET="$KVASS_TEST_ICMP6_TARGET" \
-            ctest --test-dir build --output-on-failure -R "kvass_milestone1_test|kvass_stack_tun_test|kvass_outbound_test"
+          repeat_args=()
+          if [ -n "$CTEST_REPEAT" ] && [ "$CTEST_REPEAT" != "1" ]; then
+            repeat_args+=(--repeat "until-fail:$CTEST_REPEAT")
+          fi
+          if [ -z "$CTEST_FILTER" ]; then
+            sudo env "PATH=$PATH" \
+              KVASS_TEST_ICMP_TARGET="$KVASS_TEST_ICMP_TARGET" \
+              KVASS_TEST_ICMP6_TARGET="$KVASS_TEST_ICMP6_TARGET" \
+              ctest --test-dir build --output-on-failure \
+                -R "kvass_milestone1_test|kvass_stack_tun_test|kvass_outbound_test" \
+                "${repeat_args[@]}"
+            sudo env "PATH=$PATH" \
+              KVASS_TEST_ICMP_TARGET="$KVASS_TEST_ICMP_TARGET" \
+              KVASS_TEST_ICMP6_TARGET="$KVASS_TEST_ICMP6_TARGET" \
+              ctest --test-dir build --output-on-failure \
+                -L root --no-tests=ignore \
+                "${repeat_args[@]}"
+          else
+            for t in kvass_milestone1_test kvass_stack_tun_test kvass_outbound_test; do
+              if [[ "$t" =~ $CTEST_FILTER ]]; then
+                sudo env "PATH=$PATH" \
+                  KVASS_TEST_ICMP_TARGET="$KVASS_TEST_ICMP_TARGET" \
+                  KVASS_TEST_ICMP6_TARGET="$KVASS_TEST_ICMP6_TARGET" \
+                  ctest --test-dir build --output-on-failure -R "^${t}$" "${repeat_args[@]}"
+              fi
+            done
+            sudo env "PATH=$PATH" \
+              KVASS_TEST_ICMP_TARGET="$KVASS_TEST_ICMP_TARGET" \
+              KVASS_TEST_ICMP6_TARGET="$KVASS_TEST_ICMP6_TARGET" \
+              ctest --test-dir build --output-on-failure \
+                -L root -R "$CTEST_FILTER" --no-tests=ignore \
+                "${repeat_args[@]}"
+          fi
       - name: Loopback E2E smoke test
+        if: ${{ !inputs.build_only }}
         run: bash tests/e2e/smoke_posix.sh build
       - name: Verify release packaging script (no upload)
+        if: ${{ !inputs.build_only }}
         run: |
           KVASS_TARGETS="linux/arm64" sh scripts/build.sh ci-verify
           rm -rf dist build-release-linux-arm64
@@ -275,12 +439,30 @@ jobs:
           Import-Module "$vsPath\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64"
           if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja -y }
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --preset ci-release
           cmake --build build -j -- -k 0
       - name: Unit & architecture tests (ctest)
+        if: ${{ !inputs.build_only }}
         shell: pwsh
-        run: ctest --test-dir build --output-on-failure -j4
+        env:
+          CTEST_FILTER: ${{ inputs.filter }}
+          CTEST_REPEAT: ${{ inputs.repeat }}
+          CTEST_LABELS: ${{ inputs.labels }}
+        run: |
+          $ctestArgs = @("--test-dir", "build", "--output-on-failure", "-j4")
+          if (-not [string]::IsNullOrEmpty($env:CTEST_LABELS)) {
+              $ctestArgs += @("-L", $env:CTEST_LABELS)
+          }
+          if (-not [string]::IsNullOrEmpty($env:CTEST_FILTER)) {
+              $ctestArgs += @("-R", $env:CTEST_FILTER)
+          }
+          if (-not [string]::IsNullOrEmpty($env:CTEST_REPEAT) -and $env:CTEST_REPEAT -ne "1") {
+              $ctestArgs += @("--repeat", "until-fail:$($env:CTEST_REPEAT)")
+          }
+          & ctest @ctestArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Windows Loopback E2E smoke test
+        if: ${{ !inputs.build_only }}
         shell: pwsh
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File tests/e2e/windows.ps1 -BuildDir build
       - name: Clean temporary binaries
