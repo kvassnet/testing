@@ -64,12 +64,12 @@ jobs:
           clang-tidy --version
       - name: Verify clang-format (Google style, 100 columns)
         run: |
-          find include src apps tests -type f \( -name '*.hpp' -o -name '*.h' -o -name '*.cpp' -o -name '*.cc' -o -name '*.c' \) -print0 \
+          find src apps tests -type f \( -name '*.hpp' -o -name '*.h' -o -name '*.cpp' -o -name '*.cc' -o -name '*.c' \) -print0 \
             | xargs -0 clang-format --dry-run --Werror
       - name: Run clang-tidy
         run: |
           CC=clang CXX=clang++ cmake --preset ci-release -B build-lint -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-          find src apps tests -type f -name '*.cpp' -not -name 'libfuzzer_driver.cpp' -print0 \
+          find src apps -type f -name '*.cpp' ! -name '*_test.cpp' ! -name 'fuzz.cpp' -print0 \
             | xargs -0 -n 4 -P "$(nproc)" clang-tidy --quiet -p build-lint
       - name: Clean lint build directory
         if: always()
@@ -352,85 +352,43 @@ jobs:
           ref: ${{ inputs.ref }}
           ssh-key: ${{ secrets.KVASS_CORE_DEPLOY_KEY }}
           persist-credentials: false
-      - name: Install build tools
-        run: |
-          test "$(uname -m)" = "aarch64"
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ninja-build
-      - name: Configure & build (RelWithDebInfo)
-        run: |
-          cmake --preset ci-release
-          cmake --build build -j -- -k 0
-      - name: Unit & architecture tests (non-root)
-        if: ${{ !inputs.build_only }}
+      - name: Build and test on Alpine Linux (aarch64, GCC + musl)
         env:
+          BUILD_ONLY: ${{ inputs.build_only }}
           CTEST_FILTER: ${{ inputs.filter }}
           CTEST_REPEAT: ${{ inputs.repeat }}
           CTEST_LABELS: ${{ inputs.labels }}
         run: |
-          args=(--test-dir build --output-on-failure -j4)
-          if [ -n "$CTEST_LABELS" ]; then
-            args+=(-L "$CTEST_LABELS")
-          fi
-          if [ -n "$CTEST_FILTER" ]; then
-            args+=(-R "$CTEST_FILTER")
-          fi
-          if [ -n "$CTEST_REPEAT" ] && [ "$CTEST_REPEAT" != "1" ]; then
-            args+=(--repeat "until-fail:$CTEST_REPEAT")
-          fi
-          ctest "${args[@]}"
-      - name: Root socket/TUN unit subset
-        if: ${{ !inputs.build_only }}
-        env:
-          KVASS_TEST_ICMP_TARGET: "127.0.0.1"
-          KVASS_TEST_ICMP6_TARGET: skip
-          CTEST_FILTER: ${{ inputs.filter }}
-          CTEST_REPEAT: ${{ inputs.repeat }}
-        run: |
-          repeat_args=()
-          if [ -n "$CTEST_REPEAT" ] && [ "$CTEST_REPEAT" != "1" ]; then
-            repeat_args+=(--repeat "until-fail:$CTEST_REPEAT")
-          fi
-          if [ -z "$CTEST_FILTER" ]; then
-            sudo env "PATH=$PATH" \
-              KVASS_TEST_ICMP_TARGET="$KVASS_TEST_ICMP_TARGET" \
-              KVASS_TEST_ICMP6_TARGET="$KVASS_TEST_ICMP6_TARGET" \
-              ctest --test-dir build --output-on-failure \
-                -R "kvass_milestone1_test|kvass_stack_tun_test|kvass_outbound_test" \
-                "${repeat_args[@]}"
-            sudo env "PATH=$PATH" \
-              KVASS_TEST_ICMP_TARGET="$KVASS_TEST_ICMP_TARGET" \
-              KVASS_TEST_ICMP6_TARGET="$KVASS_TEST_ICMP6_TARGET" \
-              ctest --test-dir build --output-on-failure \
-                -L root --no-tests=ignore \
-                "${repeat_args[@]}"
-          else
-            for t in kvass_milestone1_test kvass_stack_tun_test kvass_outbound_test; do
-              if [[ "$t" =~ $CTEST_FILTER ]]; then
-                sudo env "PATH=$PATH" \
-                  KVASS_TEST_ICMP_TARGET="$KVASS_TEST_ICMP_TARGET" \
-                  KVASS_TEST_ICMP6_TARGET="$KVASS_TEST_ICMP6_TARGET" \
-                  ctest --test-dir build --output-on-failure -R "^${t}$" "${repeat_args[@]}"
+          test "$(uname -m)" = "aarch64"
+          docker run --rm --privileged \
+            -e BUILD_ONLY -e CTEST_FILTER -e CTEST_REPEAT -e CTEST_LABELS \
+            -e KVASS_TEST_ICMP_TARGET="127.0.0.1" \
+            -e KVASS_TEST_ICMP6_TARGET="skip" \
+            -v "$PWD:/work" -w /work \
+            alpine:3.21 sh -euxc '
+              apk add --no-cache build-base cmake ninja git perl linux-headers bash iproute2 nftables curl tar gzip python3
+              cmake --preset ci-release
+              cmake --build build -j -- -k 0
+              if [ "$BUILD_ONLY" != "true" ]; then
+                bash -euxc '\''
+                  args=(--test-dir build --output-on-failure -j4)
+                  if [ -n "$CTEST_LABELS" ]; then args+=(-L "$CTEST_LABELS"); fi
+                  if [ -n "$CTEST_FILTER" ]; then args+=(-R "$CTEST_FILTER"); fi
+                  if [ -n "$CTEST_REPEAT" ] && [ "$CTEST_REPEAT" != "1" ]; then args+=(--repeat "until-fail:$CTEST_REPEAT"); fi
+                  ctest "${args[@]}"
+                  if [ -z "$CTEST_FILTER" ]; then
+                    ctest --test-dir build --output-on-failure -R "kvass_milestone1_test|kvass_stack_tun_test|kvass_outbound_test"
+                    ctest --test-dir build --output-on-failure -L root --no-tests=ignore
+                  fi
+                  bash tests/e2e/smoke_posix.sh build
+                  KVASS_TARGETS="linux/arm64" sh tools/build.sh ci-verify
+                  rm -rf dist build-release-linux-arm64
+                '\''
               fi
-            done
-            sudo env "PATH=$PATH" \
-              KVASS_TEST_ICMP_TARGET="$KVASS_TEST_ICMP_TARGET" \
-              KVASS_TEST_ICMP6_TARGET="$KVASS_TEST_ICMP6_TARGET" \
-              ctest --test-dir build --output-on-failure \
-                -L root -R "$CTEST_FILTER" --no-tests=ignore \
-                "${repeat_args[@]}"
-          fi
-      - name: Loopback E2E smoke test
-        if: ${{ !inputs.build_only }}
-        run: bash tests/e2e/smoke_posix.sh build
-      - name: Verify release packaging script (no upload)
-        if: ${{ !inputs.build_only }}
-        run: |
-          KVASS_TARGETS="linux/arm64" sh tools/build.sh ci-verify
-          rm -rf dist build-release-linux-arm64
+            '
       - name: Clean temporary binaries
         if: always()
-        run: rm -rf build dist build-release-*
+        run: sudo rm -rf build dist build-release-*
 
   windows-amd64:
     runs-on: windows-2022
