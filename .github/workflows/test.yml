@@ -76,7 +76,7 @@ jobs:
         run: rm -rf build-lint
 
   darwin-arm64:
-    runs-on: macos-15
+    runs-on: macos-latest
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
@@ -117,7 +117,7 @@ jobs:
       - name: Verify release packaging script (no upload)
         if: ${{ !inputs.build_only }}
         run: |
-          KVASS_TARGETS="darwin/arm64" sh scripts/build.sh ci-verify
+          KVASS_TARGETS="darwin/arm64" sh tools/build.sh ci-verify
           rm -rf dist build-release-darwin-arm64
       - name: Privileged macOS utun E2E
         if: ${{ !inputs.build_only && inputs.macos_e2e }}
@@ -212,7 +212,7 @@ jobs:
       - name: Verify release packaging script (no upload)
         if: ${{ !inputs.build_only }}
         run: |
-          KVASS_TARGETS="linux/amd64" sh scripts/build.sh ci-verify
+          KVASS_TARGETS="linux/amd64" sh tools/build.sh ci-verify
           rm -rf dist build-release-linux-amd64
       - name: Privileged Linux netns E2E
         if: ${{ !inputs.build_only && inputs.linux_e2e }}
@@ -426,7 +426,7 @@ jobs:
       - name: Verify release packaging script (no upload)
         if: ${{ !inputs.build_only }}
         run: |
-          KVASS_TARGETS="linux/arm64" sh scripts/build.sh ci-verify
+          KVASS_TARGETS="linux/arm64" sh tools/build.sh ci-verify
           rm -rf dist build-release-linux-arm64
       - name: Clean temporary binaries
         if: always()
