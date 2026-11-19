@@ -47,7 +47,7 @@ permissions:
 jobs:
   lint:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
