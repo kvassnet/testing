@@ -50,14 +50,14 @@ jobs:
           rm -rf build-bench
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.24'
+          go-version: '>=1.25.5'
       - name: Build sing-box
         run: |
           SINGBOX="${{ inputs.singbox }}"
           echo "singbox build: source (symbols)"
           git clone --depth 1 -b "v${SINGBOX}" https://github.com/SagerNet/sing-box /tmp/sing-box-src
           cd /tmp/sing-box-src
-          CGO_ENABLED=0 GOTOOLCHAIN=local go build -trimpath \
+          CGO_ENABLED=0 GOTOOLCHAIN=auto go build -trimpath \
             -tags "$(cat release/DEFAULT_BUILD_TAGS_OTHERS)" \
             -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${SINGBOX}' $(cat release/LDFLAGS) -buildid=" \
             -o /tmp/sing-box ./cmd/sing-box
