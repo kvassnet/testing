@@ -78,4 +78,4 @@ jobs:
           fi
       - name: Clean temporary binaries
         if: always()
-        run: rm -rf build-bench /tmp/kvass-core /tmp/connload /tmp/sing-box /tmp/kvass-bench
+        run: sudo rm -rf build-bench /tmp/kvass-core /tmp/connload /tmp/sing-box /tmp/kvass-bench
