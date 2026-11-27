@@ -46,7 +46,7 @@ permissions:
 
 jobs:
   lint:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
@@ -129,7 +129,7 @@ jobs:
         run: rm -rf build dist build-release-* /tmp/kvass-core /tmp/gen-mmdb /tmp/wsdump /tmp/kvass-diag
 
   linux-amd64:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
@@ -231,7 +231,7 @@ jobs:
           sudo rm -rf /tmp/kvass-diag
 
   linux-amd64-asan:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -280,7 +280,7 @@ jobs:
         run: rm -rf build-asan
 
   linux-amd64-tsan:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
@@ -343,7 +343,7 @@ jobs:
           sudo rm -rf /tmp/kvass-diag
 
   linux-arm64:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
@@ -365,7 +365,7 @@ jobs:
             -e KVASS_TEST_ICMP_TARGET="127.0.0.1" \
             -e KVASS_TEST_ICMP6_TARGET="skip" \
             -v "$PWD:/work" -w /work \
-            alpine:3.21 sh -euxc '
+            alpine:3.24 sh -euxc '
               apk add --no-cache build-base cmake ninja git perl linux-headers bash iproute2 nftables curl tar gzip python3
               cmake --preset ci-release
               cmake --build build -j -- -k 0
@@ -391,7 +391,7 @@ jobs:
         run: sudo rm -rf build dist build-release-*
 
   windows-amd64:
-    runs-on: windows-2022
+    runs-on: windows-2025
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
